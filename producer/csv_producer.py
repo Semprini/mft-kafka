@@ -10,31 +10,39 @@ from watchdog.observers import Observer
 import watchdog.events
 
 
-class Producer:
-    def __init__(self):
+class JsonProducer:
+    def __init__(self, servers=['kafka1:9093', 'kafka2:9094', 'kafka3:9095']):
         self.producer = KafkaProducer(
-            bootstrap_servers=['kafka1:9093', 'kafka2:9094', 'kafka3:9095'],
+            bootstrap_servers=servers,
             value_serializer=lambda x: dumps(x).encode('utf-8')
         )
 
 
-class CSVProducer(Producer):
-    def __init__(self, path, topic_prefix, topic_audit):
+class CSVProducer(JsonProducer):
+    def __init__(self, path, topic_prefix, topic_audit, on_closed=None):
         super().__init__()
         self.path = path
         self.topic_prefix = topic_prefix
         self.topic_audit = topic_audit
+        self.events = 0
+        self.flushes = 0
+        self.sent = 0
 
         # Setup async file watch for csv file closes
         self.event_handler = watchdog.events.PatternMatchingEventHandler(patterns=["*.csv", ],
                                     ignore_patterns=[],
                                     ignore_directories=True)
-        self.event_handler.on_closed = self.on_closed
+        if on_closed is None:
+            self.event_handler.on_closed = self.on_closed
+        else:
+            self.event_handler.on_closed = on_closed
+
         self.observer = Observer()
-        self.observer.schedule(self.event_handler, self.path, recursive=False)
+        self.observer.schedule(self.event_handler, self.path, recursive=True)
         self.observer.start()
 
     def on_closed(self, event):
+        self.events += 1
         self.produce(event.src_path)
 
     def stop(self):
@@ -54,6 +62,7 @@ class CSVProducer(Producer):
                 row['modified'] = f"{mtime}"
                 self.producer.send(topic_name, value=row)
                 row_count += 1
+                self.sent += 1
 
             if row_count > 0:
                 self.audit( file_name, topic_name, row_count, mtime )
@@ -68,6 +77,7 @@ class CSVProducer(Producer):
         }
         self.producer.send(self.topic_audit, value=audit_record)
         self.producer.flush()
+        self.flushes += 1
 
 
 if __name__ == "__main__":
