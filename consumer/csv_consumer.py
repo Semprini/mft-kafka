@@ -1,54 +1,76 @@
-import os, sys
+import os
+import sys
 import json
-from typing import Dict
+import logging
+
 from kafka import KafkaConsumer
 
-
-class Consumer:
-    def __init__(self, topics):
-        self.topics = topics
-
-        self.consumer = KafkaConsumer(
-            bootstrap_servers=['kafka1:9093', 'kafka2:9094', 'kafka3:9095'],
-            auto_offset_reset='latest', enable_auto_commit=True,
-            auto_commit_interval_ms=1000)
-
-        self.consumer.subscribe(topics=[self.topics])
+logger = logging.getLogger(__name__)
 
 
-class CSVConsumer(Consumer):
+class AuditException(Exception):
+    pass
+
+
+class KafkaJsonConsumer:
     """ A Kafka Consumer which subscribes to 1 or more CSV file transfer topics plus an audit topic
         Producer will publish an audit record to the audit topic after all data has been published for each modified file time.
         This consumer will write files with source modified file name I.e. <topic name>_<modified stamp>.csv
         TODO: Check topic ordering and make sure all rows are read before audit processed
-        TODO: Write .tmp file then rename at audit process
     """
-
-    def __init__(self, topic, topic_audit, path):
-        topics = [self.topic_audit, self.topic]
-        super().__init__(topics)
-
+    def __init__(self, writer, topic, topic_audit="csv_audit", servers=['kafka1:9093', 'kafka2:9094', 'kafka3:9095']):
         self.topic = topic
         self.topic_audit = topic_audit
-        self.path = path
+        self.writer = writer
         self.writers = {}
+        self.audits = {}
+        self.offsets = {}
 
+        self.consumer = KafkaConsumer(
+            bootstrap_servers=servers,
+            auto_offset_reset='latest', enable_auto_commit=True,
+            auto_commit_interval_ms=1000)
+
+        # TODO: Move to current offset
+
+        topics = [self.topic_audit, self.topic]
+        self.consumer.subscribe(topics=[topics])
         self.consume()
 
     def consume(self):
         for message in self.consumer:
-            value = json.loads(message.value)
+            self.offsets[message.topic] = message.offset
             if message.topic == self.topic_audit:
-                # End trigger found, write outstanding data and audit the completed file
-                if value['topic_name'] in self.writers.keys():
-                    self.writers[value['topic_name']].audit(message.value)
-                else:
-                    print("Error: Audit entry found for a file which does not exist")
+                self.process_audit_record(message)
             else:
-                # Check if the topic is in the dictionary of writers, create if not
-                if not message.topic in self.writers.keys():
-                    self.writers[message.topic] = CSVWriter(self.path, message.topic)
-                self.writers[message.topic].buffer(message)
+                self.process_record(message)
+
+    def process_record(self, message):
+        # Check if the topic is in the dictionary of writers, create if not
+        if message.topic not in self.writers.keys():
+            self.writers[message.topic] = self.writer(self.path, message.topic)
+        self.writers[message.topic].buffer(message)
+
+        if message.topic in self.audits.keys() and message.offset == self.audits[message.topic]:
+            self.finalise(message.topic)
+
+    def process_audit_record(self, message):
+        value = json.loads(message.value)
+        topic_name = value['topic_name']
+        self.audits[topic_name] = value
+
+        if topic_name in self.writers.keys() and self.offsets[topic_name] == value['final_offset']:
+            self.finalise(topic_name)
+
+    def finalise(self, topic_name):
+        # All rows written and audit record exists, write outstanding data and audit the completed file
+        self.writers[topic_name].finalise_file(self.audits[topic_name])
+        del self.writers[topic_name]
+        del self.audits[topic_name]
+        del self.offsets[topic_name]
+
+    def stop(self):
+        self.consumer.close()
 
 
 class CSVWriter():
@@ -59,32 +81,41 @@ class CSVWriter():
         self._buffer_max_len = 100
         self._columns = None
         self._written_count = 0
+        self.tmp_file_name = self.path + "tmp" + self.topic + "_" + self._buffer[0]['modified'] + ".csv"
+        self.err_file_name = self.path + "err" + self.topic + "_" + self._buffer[0]['modified'] + ".csv"
+        self.file_name = self.path + self.topic + "_" + self._buffer[0]['modified'] + ".csv"
 
     def buffer(self, message):
-        self._buffer.append( json.loads(message.value) )
+        self._buffer.append(json.loads(message.value))
         if len(self._buffer) > self._buffer_max_len:
             self.write()
-    
+
     def write(self):
-        file_name = self.path + self.topic + "_" + self._buffer[0]['modified'] + ".csv"
-        with open( file_name, "w+") as csvfile:
+        with open(self.tmp_file_name, "w+") as csvfile:
             for row in self._buffer:
                 csvfile.write(row)
         self._written_count += len(self._buffer)
         self._buffer = []
 
-    def audit(self, audit_record):
+    def finalise_file(self, audit_record):
         if len(self._buffer) > 0:
             self.write()
         if self._written_count == audit_record['row_count']:
-            print("File complete and written. Honest. Would I lie to you?")
+            os.replace(self.tmp_file_name, self.file_name)
+            logger.info("File complete and written. Honest. Would I lie to you?")
         else:
-            print("Error: Incomplete file written with audit record found")
+            os.replace(self.tmp_file_name, self.err_file_name)
+            logger.error("Error: Written file does not match audit record.")
+            raise AuditException("Write count missmatch with audit record")
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO,
+                        format='%(asctime)s | %(levelname)-8s | %(threadName)s | %(filename)s | %(lineno)d | %(message)s',
+                        datefmt='%d/%m/%Y %I:%M:%S %p')
+
     path = sys.argv[1] if len(sys.argv) > 1 else '.'
-    topic = sys.argv[2] if len(sys.argv) > 2 else 'csv_'
-    topic_audit = sys.argv[2] if len(sys.argv) > 2 else 'csvaudit'
-    
-    trigger = CSVConsumer(topic, topic_audit, path)
+    topic = sys.argv[2] if len(sys.argv) > 2 else 'csv_test'
+    topic_audit = sys.argv[2] if len(sys.argv) > 2 else 'csv_audit'
+
+    trigger = KafkaJsonConsumer(CSVWriter, topic, topic_audit)
