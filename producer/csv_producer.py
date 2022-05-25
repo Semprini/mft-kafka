@@ -29,25 +29,32 @@ class KafkaJsonProducer:
         self.flushes = 0
         self.sent = 0
 
-        self.producer = KafkaProducer(
+        self._producer = KafkaProducer(
             bootstrap_servers=servers,
             value_serializer=lambda x: dumps(x).encode('utf-8')
         )
 
     def produce(self, basename, json_data, flush=False):
-        topic_name = self.topic_prefix + os.path.basename(basename)
-        metadata = self.producer.send(topic_name, value=json_data)
+        topic_name = self.get_topic_name(basename)
+        future_metadata = self._producer.send(topic_name, value=json_data)
         self.sent += 1
 
         if flush:
-            self.producer.flush()
+            self._producer.flush()
             self.flushes += 1
 
-        return metadata.offset
+        return future_metadata
+
+    def get_topic_name(self, basename):
+        return self.topic_prefix + basename
+
+    def flush(self):
+        self._producer.flush()
+        self.flushes += 1
 
     def stop(self):
-        self.producer.flush()
-        self.producer.close()
+        self._producer.flush()
+        self._producer.close()
 
 
 class CSVSource():
@@ -98,14 +105,18 @@ class CSVSource():
         dict_reader = csv.DictReader(file)
 
         row_count = 0
-        offset = 0
+        future_metadata = None
         for row in dict_reader:
             row['modified'] = f"{mtime}"
-            offset = self.producer.produce(basename[:-4], json_data=row)
+            future_metadata = self.producer.produce(basename, json_data=row)
             row_count += 1
 
-        if row_count > 0:
-            self.audit(file_name, basename, row_count, mtime, offset)
+        if future_metadata is not None:
+            # Writes are async so final offset not guaranteed to be populated until flush
+            self.producer.flush()
+            final_offset = future_metadata.get().offset
+
+            self.audit(file_name, self.producer.get_topic_name(basename), row_count, mtime, final_offset)
             logger.info(f"CSV Sent {file_name} to {basename}")
 
     def audit(self, file_name, topic_name, row_count, mtime, final_offset):
@@ -116,8 +127,8 @@ class CSVSource():
             "file_name": f"{file_name}",
             "topic_name": f"{topic_name}",
             "modified": f"{mtime}",
-            "row_count": f"{row_count}",
-            "final_offset": f"{final_offset}",
+            "row_count": row_count,
+            "final_offset": final_offset,
         }
         self.producer.produce(self.topic_audit, json_data=audit_record, flush=True)
 
