@@ -1,5 +1,7 @@
 # mft-kafka
-File Transfer utility using Kafka as transport. De-batches to a stream to enable multiple consumers.
+File Transfer utility using Kafka as transport. Yay! an ineficient mechanism for copying files! Why?: https://semprini.me/the-forgotton-question-mark/
+
+De-batches to a stream to enable multiple consumers.
 
 Both producer and consumer accept either arguments or falls back to environment variables if no arguments are provided.
 
