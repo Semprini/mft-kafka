@@ -1,5 +1,5 @@
-import os
 import sys
+import os
 import json
 import logging
 import csv
@@ -18,14 +18,14 @@ class KafkaJsonConsumer:
         Producer will publish an audit record to the audit topic after all data has been published for each modified file time.
         This consumer will write files with source modified file name I.e. <topic name>_<modified stamp>.csv
     """
-    def __init__(self, writer, path, topic, topic_audit="csv_audit", servers=['kafka1:9093', 'kafka2:9094', 'kafka3:9095']):
-        self.topic = topic
-        self.topic_audit = topic_audit
+    def __init__(self, writer, path: str, topics: list, topic_audit: str = "csv_audit", servers: list = ['kafka1:9093', 'kafka2:9094', 'kafka3:9095']):
+        self.topics: list = topics
+        self.topic_audit: str = topic_audit
         self.writer = writer
-        self.path = path
-        self.writers = {}
-        self.audits = {}
-        self.offsets = {}
+        self.path: str = path
+        self.writers: dict = {}
+        self.audits: dict = {}
+        self.offsets: dict = {}
 
         self.consumer = KafkaConsumer(bootstrap_servers=servers,
                                       auto_offset_reset='earliest',
@@ -33,8 +33,9 @@ class KafkaJsonConsumer:
                                       # group_id='csv-consumer-group',
                                       auto_commit_interval_ms=2000)
 
-        topics = [self.topic_audit, self.topic]
-        self.consumer.subscribe(topics=topics)
+        subscribe_topics = topics
+        subscribe_topics.append(self.topic_audit)
+        self.consumer.subscribe(topics=subscribe_topics)
 
     def consume(self):
         for message in self.consumer:
@@ -134,11 +135,26 @@ if __name__ == "__main__":
                         format='%(asctime)s | %(levelname)-8s | %(threadName)s | %(filename)s | %(lineno)d | %(message)s',
                         datefmt='%d/%m/%Y %I:%M:%S %p')
 
-    path = sys.argv[1] if len(sys.argv) > 1 else '.'
-    topic = sys.argv[2] if len(sys.argv) > 2 else 'csv_test.csv'
-    topic_audit = sys.argv[2] if len(sys.argv) > 2 else 'csv_audit'
-    servers = sys.argv[3] if len(sys.argv) > 3 else '192.168.1.71:9093,192.168.1.71:9094,192.168.1.71:9095'
-    consumer = KafkaJsonConsumer(CSVWriter, path, topic, topic_audit, servers=servers.split(','))
+    if len(sys.argv) > 1:
+        import argparse
+        parser = argparse.ArgumentParser()
+        parser.add_argument("path", help="Path where files will be written.")
+        parser.add_argument("topics", help="Topic name or list of topics to subscribe to")
+        parser.add_argument("audit", nargs='?', help="Topic name for audit records. Default: csv_audit", default='csv_audit')
+        parser.add_argument("servers", nargs='?', help="List of Kafka servers and ports. Default: kafka1:9093,kafka2:9094,kafka3:9095", default='kafka1:9093,kafka2:9094,kafka3:9095')
+        args = parser.parse_args()
+        path = args.path
+        topics = args.topics.split(',')
+        audit = args.audit
+        servers = args.servers.split(',')
+    else:
+        path = os.environ.get('CSV_OUT_PATH')
+        topics = os.environ.get('CSV_TOPICS')
+        topics = topics.split(',')
+        audit = os.environ.get('CSV_AUDIT', 'csv_audit')
+        servers = os.environ.get('CSV_SERVERS', 'kafka1:9093,kafka2:9094,kafka3:9095').split(',')
+
+    consumer = KafkaJsonConsumer(CSVWriter, path, topics, audit, servers=servers)
 
     try:
         consumer.consume()

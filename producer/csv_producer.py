@@ -24,7 +24,7 @@ class DummyProducer:
 
 
 class KafkaJsonProducer:
-    def __init__(self, topic_prefix, servers=['192.168.1.71:9093', '192.168.1.71:9094', '192.168.1.71:9095']):  # ['kafka1:9093', 'kafka2:9094', 'kafka3:9095']):
+    def __init__(self, topic_prefix, servers=['kafka1:9093', 'kafka2:9094', 'kafka3:9095']):
         self.topic_prefix = topic_prefix
         self.flushes = 0
         self.sent = 0
@@ -74,7 +74,7 @@ class CSVSource():
         self.observer.schedule(self.event_handler, self.path, recursive=False)
         self.observer.start()
 
-        logger.info(f"Started {self.observer} for {self.event_handler} at {self.path}")
+        logger.info(f"Started watchdog observer for '*.csv' at {self.path}")
 
     def on_modified(self, event):
         """ TODO: Change to on_closed when watchdog implements on Windows"""
@@ -117,7 +117,7 @@ class CSVSource():
             final_offset = future_metadata.get().offset
 
             self.audit(file_name, self.producer.get_topic_name(basename), row_count, mtime, final_offset)
-            logger.info(f"CSV Sent {file_name} to {basename}")
+            logger.info(f"CSV Sent {file_name} to {self.producer.get_topic_name(basename)}")
 
     def audit(self, file_name, topic_name, row_count, mtime, final_offset):
         """ TODO: Checksum as we debatch
@@ -138,11 +138,26 @@ if __name__ == "__main__":
                         format='%(asctime)s | %(levelname)-8s | %(threadName)s | %(filename)s | %(lineno)d | %(message)s',
                         datefmt='%d/%m/%Y %I:%M:%S %p')
 
-    path = sys.argv[1] if len(sys.argv) > 1 else '.'
-    topic_prefix = sys.argv[2] if len(sys.argv) > 2 else 'csv_'
-    topic_audit = sys.argv[3] if len(sys.argv) > 3 else 'audit'
-    producer = KafkaJsonProducer(topic_prefix)  # DummyProducer()
-    source = CSVSource(path, producer, topic_audit)
+    if len(sys.argv) > 1:
+        import argparse
+        parser = argparse.ArgumentParser()
+        parser.add_argument("path", help="Path where files will be read from (all *.csv files).")
+        parser.add_argument("prefix", help="Prefix for topic name where files will be published", default='csv_')
+        parser.add_argument("audit", nargs='?', help="Topic name for audit records. Default: csv_audit", default='csv_audit')
+        parser.add_argument("servers", nargs='?', help="List of Kafka servers and ports. Default: kafka1:9093,kafka2:9094,kafka3:9095", default='kafka1:9093,kafka2:9094,kafka3:9095')
+        args = parser.parse_args()
+        path = args.path
+        prefix = args.prefix
+        audit = args.audit
+        servers = args.servers.split(',')
+    else:
+        path = os.environ.get('CSV_IN_PATH')
+        prefix = os.environ.get('CSV_PREFIX')
+        audit = os.environ.get('CSV_AUDIT', 'csv_audit')
+        servers = os.environ.get('CSV_SERVERS', 'kafka1:9093,kafka2:9094,kafka3:9095').split(',')
+
+    producer = KafkaJsonProducer(prefix, servers)
+    source = CSVSource(path, producer, audit)
 
     try:
         while True:
