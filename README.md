@@ -1,5 +1,5 @@
 # mft-kafka
-CSV File Transfer utility using Kafka as transport. 
+CSV File Transfer utility using Kafka as transport. Triggered from file modification.
 
 Yay! an inefficient mechanism for copying files! Why?: https://semprini.me/the-forgotton-question-mark/
 
