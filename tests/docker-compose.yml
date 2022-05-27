@@ -1,0 +1,36 @@
+version: "3.7"
+
+networks:
+  "kafka_kafka-cluster":
+    driver: bridge
+
+services:
+  producer:
+    build:
+      context: ../producer
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    volumes:
+      - /tmp/in/:/in/
+    environment:
+      - CSV_IN_PATH=/in/
+      - CSV_PREFIX=csv_
+      - CSV_AUDIT=csv_audit
+      - CSV_SERVERS=kafka1:9093,kafka2:9094,kafka3:9095
+    networks:
+      - kafka_kafka-cluster
+
+  consumer:
+    build:
+      context: ../consumer
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    volumes:
+      - /tmp/out/:/out/
+    environment:
+      - CSV_OUT_PATH=/out/
+      - CSV_TOPICS=csv_test.csv
+      - CSV_AUDIT=csv_audit
+      - CSV_SERVERS=kafka1:9093,kafka2:9094,kafka3:9095
+    networks:
+      - kafka_kafka-cluster
