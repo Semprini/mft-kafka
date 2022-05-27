@@ -5,6 +5,17 @@ De-batches to a stream to enable multiple consumers.
 
 Both producer and consumer accept either arguments or falls back to environment variables if no arguments are provided.
 
+## Testing
+A docker-compose.yml is provided which assumes a running Kafka. A Docker compose file for Kafka can be found here: https://github.com/Semprini/semprini-blog-pipeline/blob/main/docker-compose.yml (note: the network will pick up the directory name from where it is run use "docker network ls" and verify it against the network in the docker-compose.yml)
+
+ ```
+mkdir /tmp/in/
+mkdir /tmp/out/
+cd tests
+docker-compose up -d
+```
+Any .csv files placed in /tmp/in/ will be debatched and sent to Kafka but only test.csv will be recombined/audited into /tmp/out/
+
 ## Producer:
 usage: csv_producer.py [-h] path prefix [audit] [servers]
 
