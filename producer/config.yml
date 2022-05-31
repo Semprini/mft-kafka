@@ -1,0 +1,14 @@
+kafka:
+  servers: 
+    - "kafka1:9093"
+    - "kafka2:9094"
+    - "kafka3:9095"
+  audit_topic: "csv_audit"
+
+jobs:
+  test:
+    path: "./tests/files_in/"
+    topic_prefix: "csv_"
+    delta:
+      date_delimeter: "-"
+      date_format: "%Y%M%D"

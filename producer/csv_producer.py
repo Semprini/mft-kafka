@@ -10,6 +10,8 @@ from kafka import KafkaProducer
 from watchdog.observers import Observer
 from watchdog.events import PatternMatchingEventHandler
 
+# from csv_diff import load_csv, compare
+
 logger = logging.getLogger(__name__)
 
 
@@ -58,7 +60,7 @@ class KafkaJsonProducer:
 
 
 class CSVSource():
-    def __init__(self, path, producer, topic_audit):
+    def __init__(self, path, producer, topic_audit, delta_mode=True):
         self.path = path
         self.events = 0
         self.producer = producer
@@ -69,15 +71,18 @@ class CSVSource():
         self.event_handler = PatternMatchingEventHandler(patterns=["*.csv", ],
                                                          ignore_patterns=[],
                                                          ignore_directories=True)
-        self.event_handler.on_modified = self.on_modified
+        if os.name == 'nt':
+            # TODO: Change to on_closed when watchdog implements on Windows
+            self.event_handler.on_modified = self.file_trigger
+        else:
+            self.event_handler.on_closed = self.file_trigger
         self.observer = Observer()
         self.observer.schedule(self.event_handler, self.path, recursive=False)
         self.observer.start()
 
         logger.info(f"Started watchdog observer for '*.csv' at {self.path}")
 
-    def on_modified(self, event):
-        """ TODO: Change to on_closed when watchdog implements on Windows"""
+    def file_trigger(self, event):
         stat = os.stat(event.src_path)
 
         # Check that the file has not already been sent by checking it's modified time
@@ -96,6 +101,7 @@ class CSVSource():
         self.observer.stop()
         self.observer.join()
         logger.info(f"File watcher closed for {self.path}")
+        self.producer.stop()
 
     def debatch(self, file_name, file):
         logger.info(f"CSV Debatching {file_name}")
@@ -133,12 +139,23 @@ class CSVSource():
         self.producer.produce(self.topic_audit, json_data=audit_record, flush=True)
 
 
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO,
-                        format='%(asctime)s | %(levelname)-8s | %(threadName)s | %(filename)s | %(lineno)d | %(message)s',
-                        datefmt='%d/%m/%Y %I:%M:%S %p')
+class Config:
+    def __init__(self):
+        self.jobs = {}
+        self.servers = ['kafka1:9093', 'kafka2:9094', 'kafka3:9095']
+        self.audit_topic = 'csv_audit'
 
-    if len(sys.argv) > 1:
+    def from_yaml(self, filename):
+        logging.info(f"Parsing config from yaml file {filename}")
+        import yaml
+        with open(sys.argv[1], 'r') as file:
+            config_yml = yaml.safe_load(file)
+            self.jobs = config_yml['jobs']
+            self.servers = config_yml.get('servers', self.servers)
+            self.audit_topic = config_yml.get('audit_topic', self.audit_topic)
+
+    def from_args(self):
+        logging.info("Parsing config from cmd arguments")
         import argparse
         parser = argparse.ArgumentParser()
         parser.add_argument("path", help="Path where files will be read from (all *.csv files).")
@@ -146,22 +163,45 @@ if __name__ == "__main__":
         parser.add_argument("audit", nargs='?', help="Topic name for audit records. Default: csv_audit", default='csv_audit')
         parser.add_argument("servers", nargs='?', help="List of Kafka servers and ports. Default: kafka1:9093,kafka2:9094,kafka3:9095", default='kafka1:9093,kafka2:9094,kafka3:9095')
         args = parser.parse_args()
-        path = args.path
-        prefix = args.prefix
-        audit = args.audit
-        servers = args.servers.split(',')
-    else:
-        path = os.environ.get('CSV_IN_PATH')
-        prefix = os.environ.get('CSV_PREFIX')
-        audit = os.environ.get('CSV_AUDIT', 'csv_audit')
-        servers = os.environ.get('CSV_SERVERS', 'kafka1:9093,kafka2:9094,kafka3:9095').split(',')
 
-    producer = KafkaJsonProducer(prefix, servers)
-    source = CSVSource(path, producer, audit)
+        self.jobs['args'] = {}
+        self.jobs['args']['path'] = args.path
+        self.jobs['args']['topic_prefix'] = args.prefix
+        self.audit_topic = args.audit
+        self.servers = args.servers.split(',')
+
+    def from_env(self):
+        logging.info("Parsing config from environment vars")
+        self.jobs['args'] = {}
+        self.jobs['args']['path'] = os.environ.get('CSV_IN_PATH')
+        self.jobs['args']['topic_prefix'] = os.environ.get('CSV_PREFIX')
+        self.audit_topic = os.environ.get('CSV_AUDIT', 'csv_audit')
+        self.servers = os.environ.get('CSV_SERVERS', 'kafka1:9093,kafka2:9094,kafka3:9095').split(',')
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO,
+                        format='%(asctime)s | %(levelname)-8s | %(threadName)s | %(filename)s | %(lineno)d | %(message)s',
+                        datefmt='%d/%m/%Y %I:%M:%S %p')
+    config = Config()
+    sources = []
+
+    if len(sys.argv) == 2:
+        with open(sys.argv[1], 'r') as file:
+            config.from_yaml(file)
+            print(config.__dict__)
+    elif len(sys.argv) > 2:
+        config.from_args()
+    else:
+        config.from_env()
+
+    for job, details in config.jobs.items():
+        producer = KafkaJsonProducer(details['topic_prefix'], config.servers)
+        sources.append(CSVSource(details['path'], producer, config.audit_topic))
 
     try:
         while True:
             sleep(1)
     except KeyboardInterrupt:
-        source.stop()
-        producer.stop()
+        for source in sources:
+            source.stop()

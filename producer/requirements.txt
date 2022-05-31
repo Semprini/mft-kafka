@@ -1,2 +1,4 @@
 watchdog
 kafka-python
+csv-diff
+pyyaml
